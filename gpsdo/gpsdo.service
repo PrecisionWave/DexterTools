@@ -1,0 +1,7 @@
+[Unit]
+Description=gpsdo service
+
+[Service]
+WorkingDirectory=/root/tools/gpsdo/
+ExecStart=/usr/bin/bash gpsdo.sh
+Restart=always

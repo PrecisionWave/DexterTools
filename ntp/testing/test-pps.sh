@@ -1,0 +1,1 @@
+ppstest /dev/pps0
