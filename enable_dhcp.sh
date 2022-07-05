@@ -1,30 +1,45 @@
 #!/bin/bash
-#
-# Re-enable the default DHCP-based NetworkManager support. Use to revert the
-# static IP configuration performed by the enable_static_ip.sh script.
-#
-# Example usage:
-# enable_dhcp.sh
-#
-# WARNING: Do not use this script if there is a custom network configuration
-# set up in /etc/network/interfaces as it will be overwritten.
 
-set -e
+ETH_DEV=eth0
 
-if [[ ${UID} -ne 0 ]]; then
-        echo "This script must be run as root!"
-        exit 1
-fi
 
-echo "Re-enabling DHCP via NetworkManager for all network interfaces"
+# read current config but filter static settings for eth0
+buf=()
+tmp=()
+eth0=false
+while read -r line; do
+  if ${eth0}; then
+    if [ "${line}" = "" ]; then
+      tmp+=("${line}")
+      continue
+    elif [ "${line%% *}" = "static" ]; then
+      tmp=()
+      continue
+    else
+      eth0=false
+      buf=("${buf[@]}" "${tmp[@]}")
+      tmp=()
+    fi
+  fi
+  if [ "${line}" = "interface eth0" ]; then
+    eth0=true
+    tmp+=("${line}")
+  else
+    buf+=("${line}")
+  fi
+done < /etc/dhcpcd.conf
 
-cat <<-EOF > /etc/network/interfaces
-        # interfaces(5) file used by ifup(8) and ifdown(8)
-        # Include files from /etc/network/interfaces.d:
-        source-directory /etc/network/interfaces.d
-EOF
 
-# enable DHCP via NetworkManager (assumes the config file hasn't been touched much)
-sed -i 's/^managed=true/managed=false/' /etc/NetworkManager/NetworkManager.conf
+# write new config
+(
+  # write filtered version of current config
+  for line in "${buf[@]}"; do
+    echo "${line}"
+  done
+) > /etc/dhcpcd.conf
 
-service network-manager restart
+systemctl stop dhcpcd.service
+ip addr flush dev ${ETH_DEV}
+systemctl start dhcpcd.service
+
+exit 0
