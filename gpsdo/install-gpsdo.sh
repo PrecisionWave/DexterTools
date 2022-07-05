@@ -1,4 +1,4 @@
-cp gpsdo.service /etc/systemd/system/
+cp gpsdo.service /lib/systemd/system/
 
 systemctl daemon-reload
 systemctl enable gpsdo

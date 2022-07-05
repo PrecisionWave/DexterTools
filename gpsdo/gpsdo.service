@@ -1,7 +1,10 @@
 [Unit]
-Description=gpsdo service
+Description=GPS disciplined OCXO clock synchronization service for PrecisionWave Dexter Platform
 
 [Service]
 WorkingDirectory=/root/tools/gpsdo/
 ExecStart=/usr/bin/bash gpsdo.sh
 Restart=always
+
+[Install]
+WantedBy=multi-user.target
