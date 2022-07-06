@@ -1,23 +1,17 @@
-# get ntp
-apt install ntp
+#!/bin/bash
+
+# get ppstest
+apt -y install pps-tools
+
+# install ntp deb packages (with KPPS support)
+dpkg -i ntp-packages/*.deb
+
+# put the package on hold, so that apt won't update the package anymore
+# (packages from apt are usually not built with KPPS support)
+echo "ntp hold" | dpkg --set-selections
 
 # stop ntp service
-service ntp stop
-
-if false; then
-# get & build ntp with ATOM clk source support
-#apt remove ntp
-apt install libcap-dev
-wget http://www.eecis.udel.edu/~ntp/ntp_spool/ntp4/ntp-4.2/ntp-4.2.8p15.tar.gz
-tar xf ntp-4.2.8p15.tar.gz
-rm ntp-4.2.8p15.tar.gz
-cd ntp-4.2.8p15
-./configure --enable-ATOM --enable-linuxcaps
-make -j 2
-#make install
-# cp binaries
-cd ..
-fi
+systemctl stop ntp
 
 #systemctl unmask ntp.service
 
@@ -35,4 +29,4 @@ mv /etc/ntp.conf backup/
 cp ntp.conf /etc/
 
 # start ntp service
-service ntp start
+systemctl start ntp
