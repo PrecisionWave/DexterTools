@@ -18,15 +18,21 @@ systemctl stop ntp
 mkdir -p backup
 
 # replace dhclient.conf (removes 'sntp-servers' and 'ntp-servers')
-mv /etc/dhcp/dhclient.conf backup/
-cp dhclient.conf /etc/dhcp/
+if ! cmp --silent /etc/dhcp/dhclient.conf dhclient.conf; then
+  mv /etc/dhcp/dhclient.conf backup/
+  cp dhclient.conf /etc/dhcp/
+fi
 
 # remove dhcp hooks for ntp
-mv /etc/dhcp/dhclient-exit-hooks.d/ntp backup/
+if [ -f /etc/dhcp/dhclient-exit-hooks.d/ntp ]; then
+  mv /etc/dhcp/dhclient-exit-hooks.d/ntp backup/
+fi
 
 # replace
-mv /etc/ntp.conf backup/
-cp ntp.conf /etc/
+if ! cmp --silent /etc/ntp.conf ntp.conf; then
+  mv /etc/ntp.conf backup/
+  cp ntp.conf /etc/
+fi
 
 # start ntp service
 systemctl start ntp
