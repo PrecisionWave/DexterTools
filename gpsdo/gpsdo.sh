@@ -92,7 +92,7 @@ nomfreq_old=0
 
 while true; do
 	nomfreq=$(cat /sys/bus/iio/devices/iio:device$lmk04805/out_altvoltage7_DAC_CLK_frequency)
-	vco_mode=$(cat /sys/bus/iio/devices/iio:device$lmk04805/VCO_Mode)
+	vco_mode=$(cat /sys/bus/iio/devices/iio:device$lmk04805/VCO_MODE)
 	nomfreq=$(($nomfreq / 6))
 	if (( $nomfreq_old != $nomfreq )); then
 		# load last saved calibration value if exist
