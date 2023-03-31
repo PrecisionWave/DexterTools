@@ -17,11 +17,25 @@ vccocxo=$(cat /sys/bus/i2c/devices/1-002f/hwmon/hwmon0/in6_input)
 vccocxo=$(echo "$vccocxo *(51+36)/36/1000" | bc -l)
 tbaseboard=$(cat /sys/bus/i2c/devices/1-002f/hwmon/hwmon0/temp1_input)
 tbaseboard=$(echo "$tbaseboard/1000" | bc -l)
-scale=$(cat /sys/bus/iio/devices/iio:device0/in_temp0_scale)
-offset=$(cat /sys/bus/iio/devices/iio:device0/in_temp0_offset)
-raw=$(cat /sys/bus/iio/devices/iio:device0/in_temp0_raw)
-tfpga=$(echo "($raw + $offset) * $scale /1000" | bc -l)
-printf "FPGA temperature = %.1f°C\n" $tfpga
+
+tfpga=0
+for ix in $(seq 100); do
+        if test -f /sys/bus/iio/devices/iio:device$ix/name; then
+                name=$(cat /sys/bus/iio/devices/iio:device$ix/name)
+        else
+                name=""
+        fi
+        if [ $name == 'xadc' ] ; then
+		scale=$(cat /sys/bus/iio/devices/iio:device$ix/in_temp0_scale)
+		offset=$(cat /sys/bus/iio/devices/iio:device$ix/in_temp0_offset)
+		raw=$(cat /sys/bus/iio/devices/iio:device$ix/in_temp0_raw)
+		tfpga=$(echo "($raw + $offset) * $scale /1000" | bc -l)
+		printf "FPGA temperature = %.1f°C\n" $tfpga
+		break
+        fi
+done
+
+
 printf "Baseboard temperature = %.1f°C\n" $tbaseboard
 printf "VCC_MAIN_IN = %.2fV\n" $vccmainin
 printf "VCC5V4 = %.2fV\n" $vcc5v4
