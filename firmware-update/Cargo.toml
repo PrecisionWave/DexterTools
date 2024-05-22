@@ -1,0 +1,15 @@
+[package]
+name = "firmware-update"
+version = "0.1.0"
+edition = "2021"
+authors = [ "Matthias P. Braendli <matthias.braendli@mpb.li>" ]
+
+[dependencies]
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+regex = "1.10"
+tar = "0.4"
+ureq = { version = "2.9", features = ["tls"] }
+sys-mount = "3"
+zstd = "0.13"
+

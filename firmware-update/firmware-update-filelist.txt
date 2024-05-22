@@ -1,0 +1,7 @@
+etc/hostname
+etc/hosts
+etc/resolv.conf
+etc/network/interfaces.d/end0
+root/ODR-DabMod/dexter.ini
+root/ODR-DabMod/digital_gain.csv
+root/pacontrol/cal_persistent/paPersistentConfig.json
