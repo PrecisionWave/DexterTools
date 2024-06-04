@@ -8,12 +8,35 @@ use zstd::stream::Decoder;
 use tar::Archive;
 
 mod banks;
+mod ubootenv;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum DesiredBank { A, B }
+
+impl std::fmt::Display for DesiredBank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DesiredBank::A => write!(f, "A"),
+            DesiredBank::B => write!(f, "B"),
+        }
+    }
+}
+
+impl From<&str> for DesiredBank {
+    fn from(value: &str) -> Self {
+        match value {
+            "A" => DesiredBank::A,
+            "B" => DesiredBank::B,
+            _ => panic!("Valid banks: A or B"),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -39,8 +62,10 @@ enum Commands {
         password: Option<String>,
     },
 
-
-    // TODO: subcommand to set bank to boot
+    /// Write the bank we want to boot into on next reboot into the U-BOOT env
+    SetDesiredBank {
+        bank: DesiredBank,
+    }
 }
 
 fn read_bank_version(version_file_location: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -62,6 +87,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Commands::DetectBank => {
+            match ubootenv::get_uboot_desired_bank() {
+                Ok(b) => eprintln!("Desired bank from u-boot env: {}", b),
+                Err(e) => eprintln!("Failed to read Desired bank from u-boot env: {}", e),
+            }
+
             eprintln!("Detect and mount other bank");
             let (other_bank, mount_guard) = banks::mount_other_bank()?;
             let other_bank_root = mount_guard.target_path();
@@ -77,9 +107,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         },
         Commands::FormatOtherBank => {
-            banks::format_other_bank()?;
-            Ok(())
-        }
+            banks::format_other_bank()
+        },
+        Commands::SetDesiredBank { bank } => {
+            ubootenv::set_uboot_desired_bank(bank)
+        },
     }
 }
 
