@@ -44,10 +44,7 @@ enum Commands {
     /// Detect which bank we are running
     DetectBank,
 
-    /// Format other bank
-    FormatOtherBank,
-
-    /// Format other bank, download and extract firmware
+    /// Format other bank, download and extract firmware, and copy config over
     Update {
         /// URL from where to get the firmware (.tar.zstd)
         #[arg(short = 'f', long, value_name = "URL")]
@@ -61,6 +58,12 @@ enum Commands {
         #[arg(long)]
         password: Option<String>,
     },
+
+    /// Format other bank
+    FormatOtherBank,
+
+    /// Copy config from current bank to other bank
+    CopyConfig,
 
     /// Write the bank we want to boot into on next reboot into the U-BOOT env
     SetDesiredBank {
@@ -108,6 +111,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Commands::FormatOtherBank => {
             banks::format_other_bank()
+        },
+        Commands::CopyConfig => {
+            eprintln!("Detect and mount other bank");
+            let (other_bank, mount_guard) = banks::mount_other_bank()?;
+            let other_bank_root = mount_guard.target_path();
+            eprintln!("Bank {} mounted to {}", other_bank, other_bank_root.to_string_lossy());
+            banks::copy_config(&other_bank_root)?;
+            banks::render_fstab(other_bank, &other_bank_root.join("etc/fstab"))?;
+            Ok(())
         },
         Commands::SetDesiredBank { bank } => {
             ubootenv::set_uboot_desired_bank(bank)
