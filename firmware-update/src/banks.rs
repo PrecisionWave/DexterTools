@@ -68,6 +68,11 @@ pub fn format_other_bank() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Formatting {} as ext4", other_bank.device());
 
     let output = std::process::Command::new("mkfs.ext4")
+        .arg("-L")
+        .arg(match other_bank {
+            Bank::A => "bank_a",
+            Bank::B => "bank_b",
+        })
         .arg(other_bank.device())
         .output()?;
 
