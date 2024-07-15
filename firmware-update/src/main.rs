@@ -1,4 +1,7 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use std::{fs::File, path::Path};
 use std::io::Read;
 
@@ -153,6 +156,29 @@ fn update(url: &str, creds: Option<Credentials>) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+struct ReadWrapper {
+    reader : Box<dyn Read>,
+    count : Arc<AtomicUsize>,
+}
+
+impl ReadWrapper {
+    pub fn new(reader: Box<dyn Read>) -> Self {
+        let count = Arc::new(0.into());
+        Self{ reader, count }
+    }
+    pub fn get_count(&self) -> Arc<AtomicUsize> { self.count.clone() }
+}
+
+impl Read for ReadWrapper {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let r = self.reader.read(buf);
+        if let Ok(c) = r {
+            self.count.fetch_add(c, Ordering::Relaxed);
+        }
+        r
+    }
+}
+
 fn extract(url: &str, creds: Option<Credentials>, to_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Setup GET request to {}", url);
     let mut request_builder = ureq::get(url)
@@ -170,22 +196,50 @@ fn extract(url: &str, creds: Option<Credentials>, to_path: &Path) -> Result<(), 
 
     eprintln!("Connecting");
     let response = request_builder.call()?;
-    let mut reader = response.into_reader();
+    let content_length : Option<usize> = response.header("content-length")
+        .and_then(|v| usize::from_str_radix(v, 10).ok());
+    let mut reader = ReadWrapper::new(response.into_reader());
+    let byte_counter = reader.get_count();
+
     eprintln!("Create zstd decoder");
     let decoder = Decoder::new(&mut reader)?;
     let mut tar_archive = Archive::new(decoder);
 
     eprintln!("Extract files");
-    let mut count = 0;
+    let start_time = Instant::now();
+    let print_interval = Duration::from_secs(1);
+    let mut next_print_time = start_time + print_interval;
+
+    match content_length {
+        Some(cl) =>
+            println!("\r{}% ({}/{})  {} files extracted                 ", 0, 0, cl, 0),
+        None =>
+            println!("Content-Length unknown, cannot show progress"),
+    }
+
+    let mut file_count = 0;
     for entry in tar_archive.entries()? {
         let mut entry = entry?;
         if !entry.unpack_in(to_path)? {
             eprintln!("Did not unpack {}", entry.path()?.to_string_lossy());
         }
-        count += 1;
+        file_count += 1;
+
+        if let Some(cl) = content_length {
+            if next_print_time < Instant::now() {
+                next_print_time += print_interval;
+
+                let bytes_transferred = byte_counter.load(Ordering::Relaxed);
+                let progress_percent = bytes_transferred * 100 / cl;
+
+                // \x33[2K is the VT100 code to clear the line
+                print!("\x33[2K\r{}% ({}/{})  {} files extracted",
+                    progress_percent, bytes_transferred, cl, file_count);
+            }
+        }
     }
 
-    eprintln!("{} files extracted", count);
+    eprintln!("{} files extracted", file_count);
     Ok(())
 }
 
