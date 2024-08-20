@@ -3,8 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs::File, path::Path};
-use std::io::Read;
+use std::io::{Read, Write};
 
+use chrono::prelude::*;
 use base64::prelude::*;
 use clap::{Parser, Subcommand};
 use zstd::stream::Decoder;
@@ -74,12 +75,21 @@ enum Commands {
     }
 }
 
-fn read_bank_version(version_file_location: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    let mut file = File::open(version_file_location)?;
+fn read_file_contents(file: &Path) -> String {
     let mut version = String::new();
-    file.read_to_string(&mut version)?;
-    Ok(version)
+    match File::open(file)
+        .and_then(|mut f| f.read_to_string(&mut version))
+        {
+            Ok(_) => version,
+            Err(e) => {
+                eprintln!("Failed to read our bank version: {}", e);
+                "N/A".to_owned()
+            }
+        }
 }
+
+const VERSION_FILENAME : &'static str = "image_built_at.txt";
+const EXTRACTED_AT_FILENAME : &'static str = "extracted_at.txt";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -102,13 +112,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (other_bank, mount_guard) = banks::mount_other_bank()?;
             let other_bank_root = mount_guard.target_path();
 
-            let version_filename = "image_built_at.txt";
+            let our_version = read_file_contents(&PathBuf::from("/").join(VERSION_FILENAME));
+            let our_extract_time = read_file_contents(&PathBuf::from("/").join(EXTRACTED_AT_FILENAME));
+            eprintln!("We are running from bank {}, version {}, extracted at {}",
+                other_bank.other(), our_version, our_extract_time);
 
-            let our_version = read_bank_version(&PathBuf::from("/").join(version_filename))?;
-            eprintln!("We are running from bank {}, version {}", other_bank.other(), our_version);
-
-            let other_version = read_bank_version(&other_bank_root.join(version_filename))?;
-            eprintln!("Other bank               {}, version {}", other_bank, other_version);
+            let other_version = read_file_contents(&other_bank_root.join(VERSION_FILENAME));
+            let other_extract_time = read_file_contents(&other_bank_root.join(EXTRACTED_AT_FILENAME));
+            eprintln!("Other bank               {}, version {}, extracted at {}",
+                other_bank, other_version, other_extract_time);
 
             Ok(())
         },
@@ -237,6 +249,19 @@ fn extract(url: &str, creds: Option<Credentials>, to_path: &Path) -> Result<(), 
                     progress_percent, bytes_transferred, cl, file_count);
             }
         }
+    }
+
+    let extract_completion_time = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    eprintln!("Mark the extraction as completed at {}", extract_completion_time);
+
+    {
+        let extracted_at_path = to_path.join(EXTRACTED_AT_FILENAME);
+
+        let mut file = File::options()
+            .write(true)
+            .truncate(true)
+            .open(extracted_at_path)?;
+        file.write_all(format!("{}\n", extract_completion_time).as_bytes())?;
     }
 
     eprintln!("{} files extracted", file_count);

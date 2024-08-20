@@ -6,6 +6,7 @@ authors = [ "Matthias P. Braendli <matthias.braendli@mpb.li>" ]
 
 [dependencies]
 base64 = "0.22"
+chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 regex = "1.10"
 tar = "0.4"
