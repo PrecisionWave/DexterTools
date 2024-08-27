@@ -1,9 +1,9 @@
 use std::{fs::File, io::Write, process::Command};
 use regex::Regex;
 
-use crate::DesiredBank;
+use crate::banks::Bank;
 
-pub fn get_uboot_desired_bank() -> Result<DesiredBank, Box<dyn std::error::Error>> {
+pub fn get_uboot_desired_bank() -> Result<Bank, Box<dyn std::error::Error>> {
     let out = Command::new("fw_printenv")
         .arg("desired_bank")
         .output()?;
@@ -27,7 +27,7 @@ pub fn get_uboot_desired_bank() -> Result<DesiredBank, Box<dyn std::error::Error
     }
 }
 
-pub fn set_uboot_desired_bank(bank: DesiredBank) -> Result<(), Box<dyn std::error::Error>> {
+pub fn set_uboot_desired_bank(bank: Bank) -> Result<(), Box<dyn std::error::Error>> {
     let script = format!("desired_bank={}", bank);
     let script_filename = "ubootfw.script";
 

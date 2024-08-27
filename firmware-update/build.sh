@@ -6,5 +6,5 @@ sudo cp firmware-update ~/digris/PrecisionWave/disk-image/root-debian-testing/ro
 
 if [[ "$1" == "deploy" ]]
 then
-    scp firmware-update-filelist.txt firmware-update dexter:
+    scp firmware-update-filelist.txt firmware-update firmware-update-rc.py dexter:
 fi

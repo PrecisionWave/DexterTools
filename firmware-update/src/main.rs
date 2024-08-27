@@ -7,59 +7,29 @@ use std::io::{Read, Write};
 
 use chrono::prelude::*;
 use base64::prelude::*;
-use clap::{Parser, Subcommand};
+use serde::{Serialize, Deserialize};
 use zstd::stream::Decoder;
 use tar::Archive;
 
 mod banks;
+use banks::Bank;
 mod ubootenv;
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Copy, Clone, Debug)]
-enum DesiredBank { A, B }
-
-impl std::fmt::Display for DesiredBank {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DesiredBank::A => write!(f, "A"),
-            DesiredBank::B => write!(f, "B"),
-        }
-    }
-}
-
-impl From<&str> for DesiredBank {
-    fn from(value: &str) -> Self {
-        match value {
-            "A" => DesiredBank::A,
-            "B" => DesiredBank::B,
-            _ => panic!("Valid banks: A or B"),
-        }
-    }
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
+#[derive(Debug, Deserialize)]
+#[serde(tag = "command")]
+enum Command {
     /// Detect which bank we are running
     DetectBank,
 
     /// Format other bank, download and extract firmware, and copy config over
     Update {
         /// URL from where to get the firmware (.tar.zstd)
-        #[arg(short = 'f', long, value_name = "URL")]
         from_url: String,
 
         /// Username for HTTP Basic Auth
-        #[arg(long)]
         username: Option<String>,
 
         /// Password for HTTP Basic Auth
-        #[arg(long)]
         password: Option<String>,
     },
 
@@ -71,19 +41,63 @@ enum Commands {
 
     /// Write the bank we want to boot into on next reboot into the U-BOOT env
     SetDesiredBank {
-        bank: DesiredBank,
+        bank: Bank,
     }
 }
 
-fn read_file_contents(file: &Path) -> String {
+#[derive(Debug, Serialize)]
+#[serde(tag = "status")]
+enum CommandResult {
+    Error { detail: String },
+    CurrentState { state: DetectedBank },
+    Ok { detail: String }
+}
+
+fn handle_command(command: Command, current_bank: &DetectedBank) -> CommandResult {
+    match command {
+        Command::DetectBank => CommandResult::CurrentState{state: current_bank.clone()},
+        Command::Update { from_url, username, password } => {
+            let r = match (username, password) {
+                (None, None) => update(&from_url, None),
+                (Some(u), Some(p)) => update(&from_url, Some(Credentials { username: u, password: p })),
+                _ => Err("Specify both username and password, or neither".to_owned().into())
+            };
+
+            match r {
+                Ok(()) => CommandResult::Ok{ detail : "Update started".to_owned() },
+                Err(e) => CommandResult::Error{ detail : e.to_string() },
+            }
+        },
+        Command::FormatOtherBank => {
+            match banks::format_other_bank() {
+                Ok(()) => CommandResult::Ok{ detail : "Other bank formatted".to_owned() },
+                Err(e) => CommandResult::Error{ detail : e.to_string() },
+            }
+        },
+        Command::CopyConfig => {
+            match copy_config() {
+                Ok(b) => CommandResult::Ok{ detail : format!("Config copied to bank {}", b) },
+                Err(e) => CommandResult::Error{ detail : e.to_string() },
+            }
+        },
+        Command::SetDesiredBank { bank } => {
+            match ubootenv::set_uboot_desired_bank(bank) {
+                Ok(()) => CommandResult::Ok{ detail : format!("Configured to boot bank {}", bank) },
+                Err(e) => CommandResult::Error{ detail : e.to_string() },
+            }
+        },
+    }
+}
+
+fn read_file_contents(file: &Path) -> Option<String> {
     let mut version = String::new();
     match File::open(file)
         .and_then(|mut f| f.read_to_string(&mut version))
         {
-            Ok(_) => version,
+            Ok(_) => Some(version.trim().to_owned()),
             Err(e) => {
                 eprintln!("Failed to read our bank version: {}", e);
-                "N/A".to_owned()
+                None
             }
         }
 }
@@ -92,55 +106,92 @@ const VERSION_FILENAME : &'static str = "image_built_at.txt";
 const EXTRACTED_AT_FILENAME : &'static str = "extracted_at.txt";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+    let current_bank = detect_bank().expect("detect bank");
 
-    match cli.command {
-        Commands::Update { from_url, username, password } => {
-            match (username, password) {
-                (None, None) => update(&from_url, None),
-                (Some(u), Some(p)) => update(&from_url, Some(Credentials { username: u, password: p })),
-                _ => Err("Specify both username and password, or neither".to_owned().into())
+    let ctx = zmq::Context::new();
+    let socket = ctx.socket(zmq::REP).unwrap();
+    socket.bind("tcp://127.0.0.1:5556").unwrap();
+
+    let mut msg = zmq::Message::new();
+    loop {
+        socket.recv(&mut msg, 0).unwrap();
+        let msgstr = msg.as_str().unwrap();
+        println!("Received command {}", msgstr);
+        let response = match serde_json::from_str::<Command>(&msgstr) {
+            Ok(c) => {
+                handle_command(c, &current_bank)
             }
-        },
-        Commands::DetectBank => {
-            match ubootenv::get_uboot_desired_bank() {
-                Ok(b) => eprintln!("Desired bank from u-boot env: {}", b),
-                Err(e) => eprintln!("Failed to read Desired bank from u-boot env: {}", e),
+            Err(e) => {
+                eprintln!("Error parsing that command: {:?}", e);
+                CommandResult::Error{ detail : e.to_string() }
             }
+        };
 
-            eprintln!("Detect and mount other bank");
-            let (other_bank, mount_guard) = banks::mount_other_bank()?;
-            let other_bank_root = mount_guard.target_path();
+        let responsestr = serde_json::to_string(&response).expect("serialize to JSON");
+        socket.send(&responsestr, 0).expect("send ZMQ");
 
-            let our_version = read_file_contents(&PathBuf::from("/").join(VERSION_FILENAME));
-            let our_extract_time = read_file_contents(&PathBuf::from("/").join(EXTRACTED_AT_FILENAME));
-            eprintln!("We are running from bank {}, version {}, extracted at {}",
-                other_bank.other(), our_version, our_extract_time);
-
-            let other_version = read_file_contents(&other_bank_root.join(VERSION_FILENAME));
-            let other_extract_time = read_file_contents(&other_bank_root.join(EXTRACTED_AT_FILENAME));
-            eprintln!("Other bank               {}, version {}, extracted at {}",
-                other_bank, other_version, other_extract_time);
-
-            Ok(())
-        },
-        Commands::FormatOtherBank => {
-            banks::format_other_bank()
-        },
-        Commands::CopyConfig => {
-            eprintln!("Detect and mount other bank");
-            let (other_bank, mount_guard) = banks::mount_other_bank()?;
-            let other_bank_root = mount_guard.target_path();
-            eprintln!("Bank {} mounted to {}", other_bank, other_bank_root.to_string_lossy());
-            banks::copy_config(&other_bank_root)?;
-            banks::render_fstab(other_bank, &other_bank_root.join("etc/fstab"))?;
-            Ok(())
-        },
-        Commands::SetDesiredBank { bank } => {
-            ubootenv::set_uboot_desired_bank(bank)
-        },
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
+
+#[derive(Serialize, Debug, Clone)]
+struct DetectedBank {
+    pub our_bank : banks::Bank,
+    pub desired_bank : Option<banks::Bank>,
+
+    pub our_version : String,
+    pub our_extract_time : String,
+
+    pub other_version : Option<String>,
+    pub other_extract_time : Option<String>,
+}
+
+fn detect_bank() -> Result<DetectedBank, Box<dyn std::error::Error>> {
+    let desired_bank = match ubootenv::get_uboot_desired_bank() {
+        Ok(b) => {
+            eprintln!("Desired bank from u-boot env: {}", b);
+            Some(b)
+        },
+        Err(e) => {
+            eprintln!("Failed to read Desired bank from u-boot env: {}", e);
+            None
+        }
+    };
+
+    let (other_bank, mount_guard) = banks::mount_other_bank()?;
+    let our_bank = other_bank.other();
+    let other_bank_root = mount_guard.target_path();
+
+    let our_version = read_file_contents(&PathBuf::from("/").join(VERSION_FILENAME))
+        .or(Some("N/A".to_owned()))
+        .unwrap();
+    let our_extract_time = read_file_contents(&PathBuf::from("/").join(EXTRACTED_AT_FILENAME))
+        .or(Some("N/A".to_owned()))
+        .unwrap();
+
+    let other_version = read_file_contents(&other_bank_root.join(VERSION_FILENAME));
+    let other_extract_time = read_file_contents(&other_bank_root.join(EXTRACTED_AT_FILENAME));
+
+    Ok(DetectedBank {
+        our_bank,
+        desired_bank,
+        our_version,
+        our_extract_time,
+        other_version,
+        other_extract_time,
+    })
+}
+
+fn copy_config() -> Result<Bank, Box<dyn std::error::Error>> {
+    eprintln!("Detect and mount other bank");
+    let (other_bank, mount_guard) = banks::mount_other_bank()?;
+    let other_bank_root = mount_guard.target_path();
+    eprintln!("Bank {} mounted to {}", other_bank, other_bank_root.to_string_lossy());
+    banks::copy_config(&other_bank_root)?;
+    banks::render_fstab(other_bank, &other_bank_root.join("etc/fstab"))?;
+    Ok(other_bank)
+}
+
 
 struct Credentials {
     pub username: String,
@@ -267,4 +318,3 @@ fn extract(url: &str, creds: Option<Credentials>, to_path: &Path) -> Result<(), 
     eprintln!("{} files extracted", file_count);
     Ok(())
 }
-

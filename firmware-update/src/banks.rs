@@ -2,10 +2,11 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use serde::{Serialize, Deserialize};
 use regex::Regex;
 use sys_mount::{Mount, Unmount, UnmountDrop, UnmountFlags};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum Bank { A, B }
 
 impl Bank {
@@ -34,6 +35,17 @@ impl std::fmt::Display for Bank {
         }
     }
 }
+
+impl From<&str> for Bank {
+    fn from(value: &str) -> Self {
+        match value {
+            "A" => Bank::A,
+            "B" => Bank::B,
+            _ => panic!("Valid banks: A or B"),
+        }
+    }
+}
+
 
 pub fn detect() -> Result<Bank, Box<dyn std::error::Error>> {
     let pattern = Regex::new(r"/dev/mmcblk0p([23])[ ]+/[ ]+ext4").unwrap();
