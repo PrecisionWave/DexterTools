@@ -92,8 +92,10 @@ pub fn format_other_bank() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+pub type MountGuard = (Bank, UnmountDrop<Mount>);
+
 /// Mount the other bank and return a guard that will unmount on drop.
-pub fn mount_other_bank() -> Result<(Bank, UnmountDrop<Mount>), Box<dyn std::error::Error>> {
+pub fn mount_other_bank() -> Result<MountGuard, Box<dyn std::error::Error>> {
     let other_bank = detect()?
         .other();
 
