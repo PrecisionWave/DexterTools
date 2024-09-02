@@ -12,7 +12,7 @@ sock = context.socket(zmq.REQ)
 poller = zmq.Poller()
 poller.register(sock, zmq.POLLIN)
 
-sock.connect("tcp://127.0.0.1:5556")
+sock.connect("tcp://127.0.0.1:5552")
 
 # SetDesiredBank, Update and FormatOtherBank return either
 #{'status': 'Ok', 'detail': "some string"}

@@ -145,16 +145,114 @@ impl StateMachine {
     }
 
     fn update(&mut self, url: &str, creds: Option<Credentials>) -> Result<UpdateResult, Box<dyn std::error::Error>> {
-        eprintln!("Starting update");
+        eprintln!("Setup Firmware Update GET request to {}", url);
+        let mut request_builder = ureq::get(url)
+            .timeout(std::time::Duration::from_secs(3600*6));
 
-        banks::format_other_bank()?;
+        if let Some(c) = creds {
+            eprintln!("Add username {} HTTP Basic Auth", c.username);
+            let auth_header = format!(
+                "Basic {}",
+                BASE64_STANDARD.encode(&format!("{}:{}", c.username, c.password))
+            );
 
-        eprintln!("Detect and mount other bank");
-        let mount_guard = banks::mount_other_bank()?;
-        // Dropping the mount_guard unmounts the other bank
+            request_builder = request_builder.set("Authorization", &auth_header);
+        }
 
-        let jh = extract(url, creds, mount_guard, self.progress_state.clone())?;
-        Ok(jh)
+        eprintln!("Connecting");
+        let response = request_builder.call()?;
+        let content_length_kb : Option<usize> = response.header("content-length")
+            .and_then(|v| usize::from_str_radix(v, 10).ok())
+            .map(|v| v / 1024);
+
+        let progress_state = self.progress_state.clone();
+        let thread_handle = spawn(move || {
+            let f = move || -> Result<(Bank, sys_mount::UnmountDrop<sys_mount::Mount>), Box<dyn std::error::Error>> {
+                progress_state.update_progress(0);
+
+                eprintln!("Format other bank");
+                banks::format_other_bank()?;
+
+                eprintln!("Detect and mount other bank");
+                let mount_guard = banks::mount_other_bank()?;
+                // Dropping the mount_guard unmounts the other bank
+
+                let other_bank_root = mount_guard.1.target_path();
+
+                let mut reader = ReadWrapper::new(response.into_reader());
+                let kb_counter = reader.get_kilobyte_count();
+
+                eprintln!("Create zstd decoder");
+                let decoder = Decoder::new(&mut reader)?;
+                let mut tar_archive = Archive::new(decoder);
+
+                eprintln!("Extract files");
+                let start_time = Instant::now();
+                let print_interval = Duration::from_secs(1);
+                let mut next_print_time = start_time + print_interval;
+
+                match content_length_kb {
+                    Some(cl) =>
+                        eprintln!("{}% ({}/{})  {} files extracted                 ", 0, 0, cl, 0),
+                    None =>
+                        eprintln!("Content-Length unknown, cannot show progress"),
+                }
+
+                let mut file_count = 0;
+                for entry in tar_archive.entries()? {
+                    let mut entry = entry?;
+                    if !entry.unpack_in(&other_bank_root)? {
+                        eprintln!("Did not unpack {}", entry.path()?.to_string_lossy());
+                    }
+                    file_count += 1;
+
+                    if let Some(cl) = content_length_kb {
+                        if next_print_time < Instant::now() {
+                            next_print_time += print_interval;
+
+                            let kb_transferred = kb_counter.load(Ordering::Relaxed);
+                            let progress_percent = kb_transferred * 100 / cl;
+                            if let Ok(p) = progress_percent.try_into() {
+                                progress_state.update_progress(p);
+                            }
+
+                            eprintln!("{}% ({}/{})  {} files extracted",
+                            progress_percent, kb_transferred, cl, file_count);
+                        }
+                    }
+                }
+
+                let extract_completion_time = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+                eprintln!("Mark the extraction as completed at {}", extract_completion_time);
+
+                {
+                    let extracted_at_path = other_bank_root.join(EXTRACTED_AT_FILENAME);
+
+                    let mut file = File::options()
+                        .create_new(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(extracted_at_path)?;
+                    file.write_all(format!("{}\n", extract_completion_time).as_bytes())?;
+                }
+
+                eprintln!("{} files extracted", file_count);
+
+                eprintln!("Bank {} mounted to {}", mount_guard.0, other_bank_root.to_string_lossy());
+                banks::copy_config(&other_bank_root)?;
+                banks::render_fstab(mount_guard.0, &other_bank_root.join("etc/fstab"))?;
+
+                eprintln!("Update completed");
+
+                Ok(mount_guard)
+            };
+
+            match f() {
+                Ok(mg) => Ok(mg),
+                Err(e) => Err(format!("{:?}", e)),
+            }
+        });
+        Ok(thread_handle)
     }
 }
 
@@ -181,13 +279,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = zmq::Context::new();
     let socket = ctx.socket(zmq::REP).unwrap();
-    socket.bind("tcp://127.0.0.1:5556").unwrap();
+    socket.bind("tcp://127.0.0.1:5552").unwrap();
 
     let mut msg = zmq::Message::new();
     loop {
         socket.recv(&mut msg, 0).unwrap();
         let msgstr = msg.as_str().unwrap();
-        eprintln!("Received command {}", msgstr);
         let response = match serde_json::from_str::<Command>(&msgstr) {
             Ok(c) => {
                 state_machine.handle_command(c)
@@ -303,109 +400,4 @@ impl Read for ReadWrapper {
         }
         r
     }
-}
-
-fn extract(url: &str,
-    creds: Option<Credentials>,
-    mount_guard: MountGuard,
-    progress_state: ProgressState) -> Result<UpdateResult, Box<dyn std::error::Error>> {
-
-    eprintln!("Setup GET request to {}", url);
-    let mut request_builder = ureq::get(url)
-        .timeout(std::time::Duration::from_secs(3600*6));
-
-    if let Some(c) = creds {
-        eprintln!("Add username {} HTTP Basic Auth", c.username);
-        let auth_header = format!(
-            "Basic {}",
-            BASE64_STANDARD.encode(&format!("{}:{}", c.username, c.password))
-        );
-
-        request_builder = request_builder.set("Authorization", &auth_header);
-    }
-
-    eprintln!("Connecting");
-    let response = request_builder.call()?;
-    let content_length_kb : Option<usize> = response.header("content-length")
-        .and_then(|v| usize::from_str_radix(v, 10).ok())
-        .map(|v| v / 1024);
-
-    let thread_handle = spawn(move || {
-        let f = move || -> Result<(Bank, sys_mount::UnmountDrop<sys_mount::Mount>), Box<dyn std::error::Error>> {
-            let other_bank_root = mount_guard.1.target_path();
-
-            let mut reader = ReadWrapper::new(response.into_reader());
-            let kb_counter = reader.get_kilobyte_count();
-
-            eprintln!("Create zstd decoder");
-            let decoder = Decoder::new(&mut reader)?;
-            let mut tar_archive = Archive::new(decoder);
-
-            eprintln!("Extract files");
-            let start_time = Instant::now();
-            let print_interval = Duration::from_secs(1);
-            let mut next_print_time = start_time + print_interval;
-
-            match content_length_kb {
-                Some(cl) =>
-                    eprintln!("{}% ({}/{})  {} files extracted                 ", 0, 0, cl, 0),
-                None =>
-                    eprintln!("Content-Length unknown, cannot show progress"),
-            }
-
-            let mut file_count = 0;
-            for entry in tar_archive.entries()? {
-                let mut entry = entry?;
-                if !entry.unpack_in(&other_bank_root)? {
-                    eprintln!("Did not unpack {}", entry.path()?.to_string_lossy());
-                }
-                file_count += 1;
-
-                if let Some(cl) = content_length_kb {
-                    if next_print_time < Instant::now() {
-                        next_print_time += print_interval;
-
-                        let kb_transferred = kb_counter.load(Ordering::Relaxed);
-                        let progress_percent = kb_transferred * 100 / cl;
-                        if let Ok(p) = progress_percent.try_into() {
-                            progress_state.update_progress(p);
-                        }
-
-                        eprintln!("{}% ({}/{})  {} files extracted",
-                        progress_percent, kb_transferred, cl, file_count);
-                    }
-                }
-            }
-
-            let extract_completion_time = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-            eprintln!("Mark the extraction as completed at {}", extract_completion_time);
-
-            {
-                let extracted_at_path = other_bank_root.join(EXTRACTED_AT_FILENAME);
-
-                let mut file = File::options()
-                    .create_new(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(extracted_at_path)?;
-                file.write_all(format!("{}\n", extract_completion_time).as_bytes())?;
-            }
-
-            eprintln!("{} files extracted", file_count);
-
-            eprintln!("Bank {} mounted to {}", mount_guard.0, other_bank_root.to_string_lossy());
-            banks::copy_config(&other_bank_root)?;
-            banks::render_fstab(mount_guard.0, &other_bank_root.join("etc/fstab"))?;
-
-            eprintln!("Update completed");
-
-            Ok(mount_guard)
-        };
-
-        match f() {
-            Ok(mg) => Ok(mg),
-            Err(e) => Err(format!("{:?}", e)),
-        }
-    });
-    Ok(thread_handle)
 }
