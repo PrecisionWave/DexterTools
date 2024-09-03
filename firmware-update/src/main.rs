@@ -50,7 +50,7 @@ enum Command {
 #[serde(tag = "status")]
 enum CommandResult {
     Error { detail: String },
-    Status { banks: DetectedBank, progress: Option<i32> },
+    Status { banks: DetectedBankInfo, progress: Option<i32> },
     Ok { detail: String }
 }
 
@@ -62,20 +62,19 @@ type UpdateResult = JoinHandle<Result<MountGuard, String>>;
 struct StateMachine {
     progress_state: ProgressState,
     join_handle: Option<UpdateResult>,
-    current_bank: DetectedBank,
+    bank_info_cache: DetectedBankInfo,
 }
 
 impl StateMachine {
     pub fn new() -> Self {
-        let current_bank = banks::mount_other_bank()
-            .and_then(|mg| {
-                detect_bank(&mg)
-            }).unwrap();
+        let current_bank_info = banks::mount_other_bank()
+            .and_then(|mg| detect_bank(&mg))
+            .unwrap();
 
         StateMachine {
             progress_state : ProgressState::new(),
             join_handle : None,
-            current_bank,
+            bank_info_cache: current_bank_info,
         }
     }
 
@@ -86,7 +85,7 @@ impl StateMachine {
                     Some(j) if j.is_finished() => {
                         match j.join().expect("thread join") {
                             Ok(mg) => {
-                                self.current_bank = detect_bank(&mg).expect("detect bank");
+                                self.bank_info_cache = detect_bank(&mg).expect("detect bank");
                                 // And dropping the mountguard will unmount the partition now
                             },
                             Err(e) => {
@@ -102,7 +101,7 @@ impl StateMachine {
                 };
 
                 let progress = *(self.progress_state.progress.lock().expect("lock progress state"));
-                CommandResult::Status{ banks: self.current_bank.clone(), progress }
+                CommandResult::Status{ banks: self.bank_info_cache.clone(), progress }
             },
             Command::Update { from_url, username, password } => {
                 if self.join_handle.is_some() {
@@ -125,7 +124,13 @@ impl StateMachine {
             },
             Command::FormatOtherBank => {
                 match banks::format_other_bank() {
-                    Ok(()) => CommandResult::Ok{ detail : "Other bank formatted".to_owned() },
+                    Ok(()) => {
+                        self.bank_info_cache = banks::mount_other_bank()
+                            .and_then(|mg| detect_bank(&mg))
+                            .unwrap();
+
+                        CommandResult::Ok{ detail : "Other bank formatted".to_owned() }
+                    },
                     Err(e) => CommandResult::Error{ detail : e.to_string() },
                 }
             },
@@ -137,7 +142,13 @@ impl StateMachine {
             },
             Command::SetDesiredBank { bank } => {
                 match ubootenv::set_uboot_desired_bank(bank) {
-                    Ok(()) => CommandResult::Ok{ detail : format!("Configured to boot bank {}", bank) },
+                    Ok(()) => {
+                        self.bank_info_cache = banks::mount_other_bank()
+                            .and_then(|mg| detect_bank(&mg))
+                            .unwrap();
+
+                        CommandResult::Ok{ detail : format!("Configured to boot bank {}", bank) }
+                    },
                     Err(e) => CommandResult::Error{ detail : e.to_string() },
                 }
             },
@@ -303,7 +314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Serialize, Debug, Clone)]
-struct DetectedBank {
+struct DetectedBankInfo {
     pub our_bank : banks::Bank,
     pub desired_bank : Option<banks::Bank>,
 
@@ -328,7 +339,7 @@ fn read_file_contents(file: &Path) -> Option<String> {
         }
 }
 
-fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBank, Box<dyn std::error::Error>> {
+fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBankInfo, Box<dyn std::error::Error>> {
     let desired_bank = match ubootenv::get_uboot_desired_bank() {
         Ok(b) => {
             eprintln!("Desired bank from u-boot env: {}", b);
@@ -349,7 +360,7 @@ fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBank, Box<dyn std::er
     let other_version = read_file_contents(&other_bank_root.join(VERSION_FILENAME));
     let other_extract_time = read_file_contents(&other_bank_root.join(EXTRACTED_AT_FILENAME));
 
-    Ok(DetectedBank {
+    Ok(DetectedBankInfo {
         our_bank,
         desired_bank,
         our_version,
