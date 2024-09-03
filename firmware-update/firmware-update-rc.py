@@ -59,7 +59,10 @@ def do_update(cli_args):
         "password": None })
 
 def do_set_desired_bank(cli_args):
-    send_command({"command": "SetDesiredBank", "bank": "A"})
+    send_command({"command": "SetDesiredBank", "bank": cli_args.bank})
+
+def do_set_bank_ok(cli_args):
+    send_command({"command": "SetBankOk"})
 
 parser = argparse.ArgumentParser(description="FW UPD TOOL remote control")
 parser.set_defaults(func=lambda x: print("specify subcommand!"))
@@ -76,6 +79,9 @@ parser_update.set_defaults(func=do_update)
 parser_set_desired_bank = subparsers.add_parser('set-desired-bank', help='Set the bank from which to boot')
 parser_set_desired_bank.add_argument('-b', '--bank', required=True, help="Bank. Possible values: A or B")
 parser_set_desired_bank.set_defaults(func=do_set_desired_bank)
+
+parser_set_ok_bank = subparsers.add_parser('set-bank-ok', help='Set the current bank as ok in the last_bank_ok variable')
+parser_set_ok_bank.set_defaults(func=do_set_bank_ok)
 
 cli_args = parser.parse_args()
 cli_args.func(cli_args)
