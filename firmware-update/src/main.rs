@@ -43,7 +43,10 @@ enum Command {
     /// Write the bank we want to boot into on next reboot into the U-BOOT env
     SetDesiredBank {
         bank: Bank,
-    }
+    },
+
+    /// Write the last_ok_bank to current bank
+    SetBankOk,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +62,23 @@ const EXTRACTED_AT_FILENAME : &'static str = "extracted_at.txt";
 
 type UpdateResult = JoinHandle<Result<MountGuard, String>>;
 
+// State is either None: no update running; or Some(percent) when an update is running
+#[derive(Clone)]
+struct ProgressState {
+    pub progress : Arc<Mutex<Option<i32>>>
+}
+
+impl ProgressState {
+    pub fn new() -> Self {
+        ProgressState { progress : Arc::new(Mutex::new(None)) }
+    }
+
+    pub fn update_progress(&self, percent: i32) -> ()
+    {
+        *(self.progress.lock().expect("lock mutex")) = Some(percent);
+    }
+}
+
 struct StateMachine {
     progress_state: ProgressState,
     join_handle: Option<UpdateResult>,
@@ -68,7 +88,7 @@ struct StateMachine {
 impl StateMachine {
     pub fn new() -> Self {
         let current_bank_info = banks::mount_other_bank()
-            .and_then(|mg| detect_bank(&mg))
+            .and_then(|mg| detect_bank_info(&mg))
             .unwrap();
 
         StateMachine {
@@ -85,7 +105,7 @@ impl StateMachine {
                     Some(j) if j.is_finished() => {
                         match j.join().expect("thread join") {
                             Ok(mg) => {
-                                self.bank_info_cache = detect_bank(&mg).expect("detect bank");
+                                self.bank_info_cache = detect_bank_info(&mg).expect("detect bank");
                                 // And dropping the mountguard will unmount the partition now
                             },
                             Err(e) => {
@@ -126,7 +146,7 @@ impl StateMachine {
                 match banks::format_other_bank() {
                     Ok(()) => {
                         self.bank_info_cache = banks::mount_other_bank()
-                            .and_then(|mg| detect_bank(&mg))
+                            .and_then(|mg| detect_bank_info(&mg))
                             .unwrap();
 
                         CommandResult::Ok{ detail : "Other bank formatted".to_owned() }
@@ -141,13 +161,25 @@ impl StateMachine {
                 }
             },
             Command::SetDesiredBank { bank } => {
-                match ubootenv::set_uboot_desired_bank(bank) {
+                match ubootenv::set_uboot_bank(ubootenv::UBootBankVariable::Desired, bank) {
                     Ok(()) => {
                         self.bank_info_cache = banks::mount_other_bank()
-                            .and_then(|mg| detect_bank(&mg))
+                            .and_then(|mg| detect_bank_info(&mg))
                             .unwrap();
 
                         CommandResult::Ok{ detail : format!("Configured to boot bank {}", bank) }
+                    },
+                    Err(e) => CommandResult::Error{ detail : e.to_string() },
+                }
+            },
+            Command::SetBankOk => {
+                match ubootenv::set_uboot_bank(ubootenv::UBootBankVariable::LastOk, self.bank_info_cache.our_bank) {
+                    Ok(()) => {
+                        self.bank_info_cache = banks::mount_other_bank()
+                            .and_then(|mg| detect_bank_info(&mg))
+                            .unwrap();
+
+                        CommandResult::Ok{ detail : format!("Saved last_bank_ok={}", self.bank_info_cache.our_bank) }
                     },
                     Err(e) => CommandResult::Error{ detail : e.to_string() },
                 }
@@ -175,6 +207,9 @@ impl StateMachine {
         let content_length_kb : Option<usize> = response.header("content-length")
             .and_then(|v| usize::from_str_radix(v, 10).ok())
             .map(|v| v / 1024);
+
+        self.bank_info_cache.other_extract_time = None;
+        self.bank_info_cache.other_version = None;
 
         let progress_state = self.progress_state.clone();
         let thread_handle = spawn(move || {
@@ -267,24 +302,6 @@ impl StateMachine {
     }
 }
 
-// State is either None: no update running; or Some(percent) when an update is running
-#[derive(Clone)]
-struct ProgressState {
-    pub progress : Arc<Mutex<Option<i32>>>
-}
-
-impl ProgressState {
-    pub fn new() -> Self {
-        ProgressState { progress : Arc::new(Mutex::new(None)) }
-    }
-
-    pub fn update_progress(&self, percent: i32) -> ()
-    {
-        *(self.progress.lock().expect("lock mutex")) = Some(percent);
-    }
-}
-
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state_machine = StateMachine::new();
 
@@ -317,6 +334,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct DetectedBankInfo {
     pub our_bank : banks::Bank,
     pub desired_bank : Option<banks::Bank>,
+    pub last_ok_bank : Option<banks::Bank>,
+    pub last_tried_bank : Option<banks::Bank>,
 
     pub our_version : Option<String>,
     pub our_extract_time : Option<String>,
@@ -339,10 +358,9 @@ fn read_file_contents(file: &Path) -> Option<String> {
         }
 }
 
-fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBankInfo, Box<dyn std::error::Error>> {
-    let desired_bank = match ubootenv::get_uboot_desired_bank() {
+fn detect_bank_info(mount_guard: &MountGuard) -> Result<DetectedBankInfo, Box<dyn std::error::Error>> {
+    let desired_bank = match ubootenv::get_uboot_bank(ubootenv::UBootBankVariable::Desired) {
         Ok(b) => {
-            eprintln!("Desired bank from u-boot env: {}", b);
             Some(b)
         },
         Err(e) => {
@@ -350,6 +368,27 @@ fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBankInfo, Box<dyn std
             None
         }
     };
+
+    let last_tried_bank = match ubootenv::get_uboot_bank(ubootenv::UBootBankVariable::LastTried) {
+        Ok(b) => {
+            Some(b)
+        },
+        Err(e) => {
+            eprintln!("Failed to read last tried bank from u-boot env: {}", e);
+            None
+        }
+    };
+
+    let last_ok_bank = match ubootenv::get_uboot_bank(ubootenv::UBootBankVariable::LastOk) {
+        Ok(b) => {
+            Some(b)
+        },
+        Err(e) => {
+            eprintln!("Failed to read last ok bank from u-boot env: {}", e);
+            None
+        }
+    };
+
 
     let our_bank = mount_guard.other_bank.other();
     let other_bank_root = mount_guard.guard.target_path();
@@ -363,6 +402,8 @@ fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBankInfo, Box<dyn std
     Ok(DetectedBankInfo {
         our_bank,
         desired_bank,
+        last_tried_bank,
+        last_ok_bank,
         our_version,
         our_extract_time,
         other_version,

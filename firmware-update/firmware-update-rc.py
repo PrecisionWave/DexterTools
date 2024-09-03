@@ -39,6 +39,8 @@ def send_command(command):
 #  'banks': {
 #   'our_bank': 'A',
 #   'desired_bank': None,
+#   'last_tried_bank': None,
+#   'last_ok_bank': None,
 #   'our_version': '2024-06-17 13:00:09+00:00',
 #   'our_extract_time': None,
 #   'other_version': '2024-06-17 13:00:09+00:00',
