@@ -145,10 +145,16 @@ pub fn copy_config(other_bank_root: &Path) -> Result<(), Box<dyn std::error::Err
     let file = File::open("firmware-update-filelist.txt")?;
     let reader = BufReader::new(file);
     for line in reader.lines() {
-        let from = PathBuf::from("/").join(line?);
-        let to = other_bank_root.join(&from);
-        eprintln!("Copy {} to {}", from.to_string_lossy(), to.to_string_lossy());
-        std::fs::copy(from, to)?;
+        let filename = line?;
+        let from = PathBuf::from("/").join(&filename);
+        let to = other_bank_root.join(&filename);
+        if from != to {
+            eprintln!("Copy {} to {}", from.to_string_lossy(), to.to_string_lossy());
+            std::fs::copy(from, to)?;
+        }
+        else {
+            eprintln!("Refusing to copy {} to {}!", from.to_string_lossy(), to.to_string_lossy());
+        }
     }
 
     Ok(())
