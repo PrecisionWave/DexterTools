@@ -167,7 +167,7 @@ impl StateMachine {
 
         let progress_state = self.progress_state.clone();
         let thread_handle = spawn(move || {
-            let f = move || -> Result<(Bank, sys_mount::UnmountDrop<sys_mount::Mount>), Box<dyn std::error::Error>> {
+            let f = move || -> Result<MountGuard, Box<dyn std::error::Error>> {
                 progress_state.update_progress(0);
 
                 eprintln!("Format other bank");
@@ -177,7 +177,7 @@ impl StateMachine {
                 let mount_guard = banks::mount_other_bank()?;
                 // Dropping the mount_guard unmounts the other bank
 
-                let other_bank_root = mount_guard.1.target_path();
+                let other_bank_root = mount_guard.guard.target_path();
 
                 let mut reader = ReadWrapper::new(response.into_reader());
                 let kb_counter = reader.get_kilobyte_count();
@@ -238,9 +238,9 @@ impl StateMachine {
 
                 eprintln!("{} files extracted", file_count);
 
-                eprintln!("Bank {} mounted to {}", mount_guard.0, other_bank_root.to_string_lossy());
+                eprintln!("Bank {} mounted to {}", mount_guard.other_bank, other_bank_root.to_string_lossy());
                 banks::copy_config(&other_bank_root)?;
-                banks::render_fstab(mount_guard.0, &other_bank_root.join("etc/fstab"))?;
+                banks::render_fstab(mount_guard.other_bank, &other_bank_root.join("etc/fstab"))?;
 
                 eprintln!("Update completed");
 
@@ -307,8 +307,8 @@ struct DetectedBank {
     pub our_bank : banks::Bank,
     pub desired_bank : Option<banks::Bank>,
 
-    pub our_version : String,
-    pub our_extract_time : String,
+    pub our_version : Option<String>,
+    pub our_extract_time : Option<String>,
 
     pub other_version : Option<String>,
     pub other_extract_time : Option<String>,
@@ -340,15 +340,11 @@ fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBank, Box<dyn std::er
         }
     };
 
-    let our_bank = mount_guard.0.other();
-    let other_bank_root = mount_guard.1.target_path();
+    let our_bank = mount_guard.other_bank.other();
+    let other_bank_root = mount_guard.guard.target_path();
 
-    let our_version = read_file_contents(&PathBuf::from("/").join(VERSION_FILENAME))
-        .or(Some("N/A".to_owned()))
-        .unwrap();
-    let our_extract_time = read_file_contents(&PathBuf::from("/").join(EXTRACTED_AT_FILENAME))
-        .or(Some("N/A".to_owned()))
-        .unwrap();
+    let our_version = read_file_contents(&PathBuf::from("/").join(VERSION_FILENAME));
+    let our_extract_time = read_file_contents(&PathBuf::from("/").join(EXTRACTED_AT_FILENAME));
 
     let other_version = read_file_contents(&other_bank_root.join(VERSION_FILENAME));
     let other_extract_time = read_file_contents(&other_bank_root.join(EXTRACTED_AT_FILENAME));
@@ -365,12 +361,12 @@ fn detect_bank(mount_guard: &MountGuard) -> Result<DetectedBank, Box<dyn std::er
 
 fn copy_config() -> Result<Bank, Box<dyn std::error::Error>> {
     eprintln!("Detect and mount other bank");
-    let (other_bank, mount_guard) = banks::mount_other_bank()?;
-    let other_bank_root = mount_guard.target_path();
-    eprintln!("Bank {} mounted to {}", other_bank, other_bank_root.to_string_lossy());
+    let mount_guard = banks::mount_other_bank()?;
+    let other_bank_root = mount_guard.guard.target_path();
+    eprintln!("Bank {} mounted to {}", mount_guard.other_bank, other_bank_root.to_string_lossy());
     banks::copy_config(&other_bank_root)?;
-    banks::render_fstab(other_bank, &other_bank_root.join("etc/fstab"))?;
-    Ok(other_bank)
+    banks::render_fstab(mount_guard.other_bank, &other_bank_root.join("etc/fstab"))?;
+    Ok(mount_guard.other_bank)
 }
 
 

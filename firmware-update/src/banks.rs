@@ -92,7 +92,10 @@ pub fn format_other_bank() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub type MountGuard = (Bank, UnmountDrop<Mount>);
+pub struct MountGuard {
+    pub other_bank : Bank,
+    pub guard : UnmountDrop<Mount>
+}
 
 /// Mount the other bank and return a guard that will unmount on drop.
 pub fn mount_other_bank() -> Result<MountGuard, Box<dyn std::error::Error>> {
@@ -103,7 +106,10 @@ pub fn mount_other_bank() -> Result<MountGuard, Box<dyn std::error::Error>> {
         .fstype("ext4")
         .mount(other_bank.device(), "/mnt/other_bank")?;
 
-    Ok((other_bank, mount_guard.into_unmount_drop(UnmountFlags::DETACH)))
+    Ok(MountGuard{
+        other_bank,
+        guard: mount_guard.into_unmount_drop(UnmountFlags::DETACH)
+    })
 }
 
 pub fn render_fstab(bank: Bank, fstab_location: &Path) -> Result<(), Box<dyn std::error::Error>> {

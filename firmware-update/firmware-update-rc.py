@@ -40,7 +40,7 @@ def send_command(command):
 #   'our_bank': 'A',
 #   'desired_bank': None,
 #   'our_version': '2024-06-17 13:00:09+00:00',
-#   'our_extract_time': 'N/A',
+#   'our_extract_time': None,
 #   'other_version': '2024-06-17 13:00:09+00:00',
 #   'other_extract_time': None}}
 #
