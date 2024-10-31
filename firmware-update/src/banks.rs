@@ -102,9 +102,18 @@ pub fn mount_other_bank() -> Result<MountGuard, Box<dyn std::error::Error>> {
     let other_bank = detect()?
         .other();
 
+    let other_bank_mountpoint = "/mnt/other_bank";
+
+    if !Path::new(other_bank_mountpoint).is_dir() {
+        if let Err(e) = std::fs::create_dir(other_bank_mountpoint) {
+            eprintln!("Cannot create dir {}: {}", other_bank_mountpoint, e);
+        }
+        eprintln!("Created {}", other_bank_mountpoint);
+    }
+
     let mount_guard = Mount::builder()
         .fstype("ext4")
-        .mount(other_bank.device(), "/mnt/other_bank")?;
+        .mount(other_bank.device(), other_bank_mountpoint)?;
 
     Ok(MountGuard{
         other_bank,

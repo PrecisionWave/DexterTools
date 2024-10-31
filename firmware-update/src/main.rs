@@ -89,6 +89,22 @@ impl StateMachine {
     pub fn new() -> Self {
         let current_bank_info = banks::mount_other_bank()
             .and_then(|mg| detect_bank_info(&mg))
+            .or_else(|e| {
+                eprintln!("Could not mount other bank: {}", e);
+
+                banks::detect()
+                    .and_then(|bank|
+                        Ok(DetectedBankInfo {
+                            our_bank: bank,
+                            desired_bank: None,
+                            last_ok_bank: None,
+                            last_tried_bank: None,
+                            our_version: None,
+                            our_extract_time: None,
+                            other_version: None,
+                            other_extract_time: None,
+                        }))
+                })
             .unwrap();
 
         StateMachine {
