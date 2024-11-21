@@ -3,6 +3,8 @@ name = "firmware-update"
 version = "0.1.0"
 edition = "2021"
 authors = [ "Matthias P. Braendli <matthias.braendli@mpb.li>" ]
+license = "GPL-3.0-only"
+license-file = "COPYING"
 
 [dependencies]
 base64 = "0.22"
